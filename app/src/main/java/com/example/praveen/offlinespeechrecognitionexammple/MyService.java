@@ -1,12 +1,17 @@
 package com.example.praveen.offlinespeechrecognitionexammple;
 
+
+import static android.util.Log.i;
+
+import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.CountDownTimer;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Message;
@@ -18,37 +23,61 @@ import android.speech.SpeechRecognizer;
 import android.util.Log;
 import android.widget.ArrayAdapter;
 
-import java.lang.ref.WeakReference;
-import java.util.ArrayList;
-
 public class MyService extends Service
 {
     protected AudioManager mAudioManager;
-    protected SpeechRecognizer mSpeechRecognizer;
+    protected SpeechRecognizer mSpeechRecognizer = null;;
     protected Intent mSpeechRecognizerIntent;
     protected final Messenger mServerMessenger = new Messenger(new IncomingHandler(this));
 
     protected boolean mIsListening;
     protected volatile boolean mIsCountDownOn;
-    private boolean mIsStreamSolo;
+    private boolean mIsStreamSolo = false;
 
     static final int MSG_RECOGNIZER_START_LISTENING = 1;
     static final int MSG_RECOGNIZER_CANCEL = 2;
+    
+    private Handler mHandler = new Handler();
 
 
     @Override
     public void onCreate()
     {
+        Log.d("MyService","onCreate");
         super.onCreate();
-        mAudioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        mSpeechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        mAudioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);       
+        setUpSpeechRecognizer();
+
+    }
+    
+    public void setUpSpeechRecognizer() {
+    	i("MyService","setUpSpeechRecognizer");
+    	if (mSpeechRecognizer == null) {
+    	i("MyService","setUpSpeechRecognizer mSpeechRecognizer is null");
+    	mSpeechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
         mSpeechRecognizer.setRecognitionListener(new SpeechRecognitionListener());
         mSpeechRecognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         mSpeechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         mSpeechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE,
                 this.getPackageName());
+    	}
+    }
 
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Log.d("MyService","onStartCommand");
+        /*try
+        {
+            Message msg = new Message();
+            msg.what = MSG_RECOGNIZER_START_LISTENING;
+            mServerMessenger.send(msg);
+        }
+        catch (RemoteException e)
+        {
+
+        }*/
+        return  START_NOT_STICKY;
     }
 
     protected static class IncomingHandler extends Handler
@@ -75,79 +104,94 @@ public class MyService extends Service
                         // turn off beep sound
                         if (!target.mIsStreamSolo)
                         {
-                            target.mAudioManager.setStreamSolo(AudioManager.STREAM_VOICE_CALL, true);
+                            target.mAudioManager.setStreamMute(AudioManager.STREAM_MUSIC, true);
                             target.mIsStreamSolo = true;
                         }
                     }
                     if (!target.mIsListening)
                     {
+                    	target.setUpSpeechRecognizer();
                         target.mSpeechRecognizer.startListening(target.mSpeechRecognizerIntent);
-                        target.mIsListening = true;
-                        //Log.d(TAG, "message start listening"); //$NON-NLS-1$
+                        Log.d("MyService", "message start listening"); //$NON-NLS-1$
                     }
                     break;
 
                 case MSG_RECOGNIZER_CANCEL:
                     if (target.mIsStreamSolo)
                     {
-                        target.mAudioManager.setStreamSolo(AudioManager.STREAM_VOICE_CALL, false);
+                        target.mAudioManager.setStreamMute(AudioManager.STREAM_MUSIC, false);
                         target.mIsStreamSolo = false;
                     }
                     target.mSpeechRecognizer.cancel();
                     target.mIsListening = false;
-                    //Log.d(TAG, "message canceled recognizer"); //$NON-NLS-1$
+                    target.destroySpeechRecognizerInstance();
+                    Log.d("MyService", "message canceled recognizer"); //$NON-NLS-1$
                     break;
             }
         }
     }
-
-    // Count down timer for Jelly Bean work around
-    protected CountDownTimer mNoSpeechCountDown = new CountDownTimer(5000, 5000)
-    {
-
-        @Override
-        public void onTick(long millisUntilFinished)
+    
+    public void destroySpeechRecognizerInstance() {
+    	i("MyService"," destroySpeechRecognizerInstance");
+    	if (mSpeechRecognizer != null)
         {
-            // TODO Auto-generated method stub
-
+    		i("MyService"," destroySpeechRecognizerInstance mSpeechRecognizer is not null");
+            mSpeechRecognizer.destroy();
+            mSpeechRecognizer = null;
         }
+    }
 
-        @Override
-        public void onFinish()
-        {
+    
+    Runnable mNoSpeechCountDown = new Runnable() {
+		
+		@Override
+		public void run() {
+			Log.d("MyService"," Runnable mNoSpeechCountDown");
+			mHandler.removeCallbacks(mNoSpeechCountDown);
             mIsCountDownOn = false;
-            Message message = Message.obtain(null, MSG_RECOGNIZER_CANCEL);
+            if (!mIsListening) {            
             try
             {
+            	Message message = Message.obtain(null, MSG_RECOGNIZER_CANCEL);
                 mServerMessenger.send(message);
+                
                 message = Message.obtain(null, MSG_RECOGNIZER_START_LISTENING);
                 mServerMessenger.send(message);
+               
             }
             catch (RemoteException e)
             {
 
             }
-        }
-    };
+			
+		  }
+		}
+	};
+    
 
     @Override
     public void onDestroy()
     {
+        Log.d("MyService","onDestroy");
         super.onDestroy();
 
         if (mIsCountDownOn)
         {
-            mNoSpeechCountDown.cancel();
+            mHandler.removeCallbacks(mNoSpeechCountDown);
         }
-        if (mSpeechRecognizer != null)
-        {
-            mSpeechRecognizer.destroy();
-        }
+        
+        destroySpeechRecognizerInstance();
     }
 
     @Override
     public IBinder onBind(Intent intent) {
         return mServerMessenger.getBinder();
+    }
+    
+    @Override
+    public boolean onUnbind(Intent intent) {
+    	 i("MyService", "onUnbind()");
+		return false;
     }
 
     protected class SpeechRecognitionListener implements RecognitionListener
@@ -157,45 +201,66 @@ public class MyService extends Service
         public void onBeginningOfSpeech()
         {
             // speech input will be processed, so there is no need for count down anymore
-            if (mIsCountDownOn)
-            {
-                mIsCountDownOn = false;
-                mNoSpeechCountDown.cancel();
-            }
-            //Log.d(TAG, "onBeginingOfSpeech"); //$NON-NLS-1$
+        	mIsCountDownOn = false;
+        	mHandler.removeCallbacks(mNoSpeechCountDown);
+            mIsListening = true;
+            Log.d("MyService", "onBeginingOfSpeech"); 
         }
 
         @Override
         public void onBufferReceived(byte[] buffer)
         {
+            Log.d("MyService", "onBufferReceived");
 
         }
 
         @Override
         public void onEndOfSpeech()
         {
-            //Log.d(TAG, "onEndOfSpeech"); //$NON-NLS-1$
+        	mIsListening = false;
+            Log.d("MyService", "onEndOfSpeech"); //$NON-NLS-1$
         }
 
         @Override
         public void onError(int error)
         {
-            if (mIsCountDownOn)
+            if ((error == SpeechRecognizer.ERROR_NO_MATCH)|| (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT))
             {
-                mIsCountDownOn = false;
-                mNoSpeechCountDown.cancel();
-            }
-            mIsListening = false;
-            Message message = Message.obtain(null, MSG_RECOGNIZER_START_LISTENING);
-            try
-            {
-                mServerMessenger.send(message);
-            }
-            catch (RemoteException e)
-            {
+                Log.d("MyService", "didn't recognize anything");
+                try
+                {
+                	mIsListening = false;
+                    Message msg = Message.obtain(null,MSG_RECOGNIZER_START_LISTENING);
+                    mServerMessenger.send(msg);
+                }
+                catch (RemoteException e)
+                {
 
+                }
+                
+                
             }
-            //Log.d(TAG, "error = " + error); //$NON-NLS-1$
+            else 
+            {
+                Log.d("MyService"," Error code = " +error);
+                
+                if (mIsCountDownOn)
+                {
+                    mHandler.removeCallbacks(mNoSpeechCountDown);
+                }
+                try
+                {
+                	Message msg = Message.obtain(null,MSG_RECOGNIZER_CANCEL);
+                	mServerMessenger.send(msg);
+
+                    msg = Message.obtain(null,MSG_RECOGNIZER_START_LISTENING);
+                    mServerMessenger.send(msg);
+                }
+                catch (RemoteException e)
+                {
+
+                }
+            }
         }
 
         @Override
@@ -216,7 +281,9 @@ public class MyService extends Service
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN)
             {
                 mIsCountDownOn = true;
-                mNoSpeechCountDown.start();
+                
+                mIsListening = false;
+                mHandler.postDelayed(mNoSpeechCountDown, 5000);
 
             }
             Log.d("MyService", "onReadyForSpeech"); //$NON-NLS-1$
@@ -231,6 +298,24 @@ public class MyService extends Service
             MainActivity.wordsList.setAdapter(new ArrayAdapter<String>(getApplicationContext(), android.R.layout.simple_list_item_1, matches));
             for (int i =0;i<matches.size();i++) {
                 Log.d("MyService","result = " + matches.get(i));
+            }
+            if (mIsCountDownOn)
+            {
+               mIsCountDownOn = false;
+               mHandler.removeCallbacks(mNoSpeechCountDown);
+            }
+            mIsListening = false;
+            Log.d("MyService", "onResults()");
+
+            try
+            {
+                Message msg = Message.obtain(null,MSG_RECOGNIZER_START_LISTENING);
+
+                mServerMessenger.send(msg);
+            }
+            catch (RemoteException e)
+            {
+
             }
         }
 
